@@ -38,11 +38,11 @@ func Port(p int) (net.Listener, error) {
 		s.Files = append(s.Files, file)
 		return nil, nil
 	} else {
-		log.Println("Port Pointer: ", s.pointer)
+		log.Printf("Listening port %v", p)
 		port, err := net.FileListener(os.NewFile(s.pointer, "[socket]"))
 		s.pointer++
 		if err != nil {
-			log.Println("Failed to listen ", err)
+			log.Fatal("Failed to listen ", err)
 			os.Exit(1)
 		}
 		return port, nil
@@ -52,74 +52,63 @@ func Port(p int) (net.Listener, error) {
 func Certs(path string) []tls.Certificate {
 	certs := []tls.Certificate{}
 
-	if havePrivileges() {
-		log.Println("Searching for certificates in ", path)
-		possibleFiles, err := filepath.Glob(path)
-		log.Println("Found ", possibleFiles)
-		sort.Strings(possibleFiles)
+	possibleFiles, err := filepath.Glob(path)
+	sort.Strings(possibleFiles)
 
-		var certFile, keyFile *os.File
+	var certFile, keyFile *os.File
+	if havePrivileges() {
 		for i := 0; i < len(possibleFiles)-1; i++ {
 			if (strings.HasSuffix(possibleFiles[i], "fullchain.pem") && strings.HasSuffix(possibleFiles[i+1], "privkey.pem")) ||
 				(strings.HasSuffix(possibleFiles[i], "server.crt") && strings.HasSuffix(possibleFiles[i+1], "server.key")) {
 				certFile, err = os.Open(possibleFiles[i])
 				if err != nil {
-					log.Fatalf("error loading cert: %v", err)
+					log.Fatal("error loading cert:", err)
 				}
-				log.Println("Found cert " + possibleFiles[i])
 				keyFile, err = os.Open(possibleFiles[i+1])
 				if err != nil {
-					log.Fatalf("error loading key: %v", err)
+					log.Fatal("error loading key:", err)
 				}
-				log.Println("Found key " + possibleFiles[i+1])
 				s.Files = append(s.Files, certFile, keyFile)
 				i++
 			}
 		}
-		return certs //Empty
-
 	} else {
-
-		log.Println("Reading cert")
-		log.Println("Cert Pointer: ", s.pointer)
-		certFile := os.NewFile(s.pointer, "[socket]")
-		for certFile != nil {
-			log.Println("Cert Pointer: ", s.pointer)
+		fdCount, err := strconv.Atoi(os.Args[len(os.Args)-1])
+		os.Args = os.Args[:len(os.Args)-1]
+		if err != nil {
+			log.Fatal("Failed to parse fdCount", err)
+		}
+		for int(s.pointer) < fdCount {
 			certFile := os.NewFile(s.pointer, "[socket]")
-			log.Println("Reading key")
-			log.Println("Key Pointer: ", s.pointer+1)
+			defer certFile.Close()
 			keyFile := os.NewFile(s.pointer+1, "[socket]")
+			defer keyFile.Close()
 			s.pointer += 2
 
 			certBytes, err := ioutil.ReadAll(certFile)
 			if err != nil {
-				log.Println("Failed to read cert", err)
-				break
+				log.Fatal("Failed to read cert", err)
 			}
 
 			keyBytes, err := ioutil.ReadAll(keyFile)
 			if err != nil {
-				log.Println("Failed to read key", err)
-				break
+				log.Fatal("Failed to read key", err)
 			}
 
 			cert, err := tls.X509KeyPair(certBytes, keyBytes)
 			if err != nil {
-				log.Fatalf("error building cert: %v", err)
-				break
+				log.Fatal("error building cert: %v", err)
 			}
 			certs = append(certs, cert)
 		}
-
-		return certs
 	}
+	return certs
 }
 
 func DropPrivileges(u string) error {
 	if havePrivileges() {
-		log.Println("Dropping privileges...")
-		cmd := exec.Command(os.Args[0], os.Args[1:]...)
-		log.Println("File D ", s.Files)
+		log.Println("Starting as user", u)
+		cmd := exec.Command(os.Args[0], append(os.Args[1:], fmt.Sprintf("%v", len(s.Files)+3))...)
 		cmd.ExtraFiles = s.Files
 
 		unprivilegedUser, err := user.Lookup(u)
